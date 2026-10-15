@@ -53,23 +53,25 @@ export const pursuitVerificationCommand = {
             });
 
             const data = response.data;
-            const robloxName = data?.robloxUsername || data?.roblox_username || data?.username;
-            let robloxId = data?.robloxId || data?.roblox_id;
+            // Fallback hierarchy: Roblox Username -> Website Username -> Discord Username
+            const displayName = data?.robloxUsername || data?.roblox_username || data?.username || data?.discordUsername || targetUser.username;
+            const robloxId = data?.robloxId || data?.roblox_id;
             const isVerified = (data?.isVerified || data?.verified) ? 'Yes' : 'No';
+            const verificationType = (data?.robloxUsername || data?.roblox_username) ? 'Roblox Linked' : 'Discord Verified Only';
 
-            if (!robloxName) {
+            if (!data) {
                 return await InteractionHelper.safeEditReply(interaction, {
                     content: `❌ **No Account Found:** <@${targetUser.id}> has not completed Pursuit Verification on \`interactivemountain.com\`.`
                 });
             }
 
-            let robloxAvatar = targetUser.displayAvatarURL({ dynamic: true });
+            let avatarUrl = targetUser.displayAvatarURL({ dynamic: true });
 
             if (robloxId && !isNaN(robloxId)) {
                 try {
                     const thumbRes = await axios.get(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${robloxId}&size=150x150&format=Png&isCircular=false`);
                     if (thumbRes.data?.data?.[0]?.imageUrl) {
-                        robloxAvatar = thumbRes.data.data[0].imageUrl;
+                        avatarUrl = thumbRes.data.data[0].imageUrl;
                     }
                 } catch (tErr) {
                     logger.warn(`Could not fetch Roblox headshot for ${robloxId}:${tErr.message}`);
@@ -78,18 +80,19 @@ export const pursuitVerificationCommand = {
 
             const profileUrl = (robloxId && !isNaN(robloxId))
                 ? `https://www.roblox.com/users/${robloxId}/profile`
-                : `https://www.roblox.com/search/users?keyword=${encodeURIComponent(robloxName)}`;
+                : `https://www.interactivemountain.com`;
 
             const staffEmbed = new EmbedBuilder()
                 .setColor(getColor('info'))
                 .setTitle(`Pursuit Verification Data — ${targetUser.tag}`)
-                .setThumbnail(robloxAvatar)
+                .setThumbnail(avatarUrl)
                 .addFields(
                     { name: 'Discord User', value: `<@${targetUser.id}> (\`${targetUser.id}\`)`, inline: false },
-                    { name: 'Linked Roblox Username', value: `\`${robloxName}\``, inline: true },
-                    { name: 'Roblox User ID', value: `\`${robloxId || 'N/A'}\``, inline: true },
+                    { name: 'Assigned Nickname / Name', value: `\`${displayName}\``, inline: true },
+                    { name: 'Verification Type', value: `\`${verificationType}\``, inline: true },
                     { name: 'Pursuit Verified', value: `\`${isVerified}\``, inline: true },
-                    { name: 'Roblox Profile Link', value: `[View Profile](${profileUrl})`, inline: false }
+                    { name: 'Roblox User ID', value: `\`${robloxId || 'N/A (Discord Only)'}\``, inline: true },
+                    { name: 'Profile Link', value: `[View Profile](${profileUrl})`, inline: false }
                 )
                 .setFooter({ text: 'Interactive Mountain™ Pursuit Verification System' })
                 .setTimestamp();
@@ -129,19 +132,22 @@ export async function handlePursuitVerificationButton(interaction) {
             timeout: 5000
         });
 
-        const robloxName = response.data?.robloxUsername || response.data?.roblox_username || response.data?.username;
-
-        if (!robloxName) {
+        const data = response.data;
+        
+        if (!data || (!data.verified && !data.isVerified)) {
             return await interaction.editReply({
-                content: '❌ **Unverified!** You have not completed Pursuit Verification on our website yet.\n\nClick **Link Account** above, copy your verification code, and verify it under `interactivemountain.com/settings`.'
+                content: '❌ **Unverified!** You have not completed Pursuit Verification on our website yet.\n\nClick **Link Account** above, log in with your account, and link your profile.'
             });
         }
+
+        // Determine nickname: Prefer Roblox name, fallback to website username or Discord username
+        const nickName = data?.robloxUsername || data?.roblox_username || data?.username || interaction.user.globalName || interaction.user.username;
 
         const member = interaction.member;
         let nicknameUpdated = true;
 
         try {
-            await member.setNickname(robloxName);
+            await member.setNickname(nickName);
         } catch (nickErr) {
             nicknameUpdated = false;
             logger.warn(`Could not change nickname for ${interaction.user.tag}: ${nickErr.message}`);
@@ -157,11 +163,11 @@ export async function handlePursuitVerificationButton(interaction) {
 
         if (nicknameUpdated) {
             await interaction.editReply({
-                content: `✅ **Pursuit Verified!** Your server nickname has been updated to **${robloxName}** and your verified role has been assigned!`
+                content: `✅ **Pursuit Verified!** Your server nickname has been updated to **${nickName}** and your verified role has been assigned!`
             });
         } else {
             await interaction.editReply({
-                content: `✅ **Pursuit Verified!** Roles synced for **${robloxName}**! *(Note: Server owner or admin nicknames cannot be modified by bots).*`
+                content: `✅ **Pursuit Verified!** Roles synced for **${nickName}**! *(Note: Server owner or admin nicknames cannot be modified by bots).*`
             });
         }
 
@@ -171,9 +177,9 @@ export async function handlePursuitVerificationButton(interaction) {
                 guildId: interaction.guildId,
                 eventType: EVENT_TYPES.USER_VERIFY,
                 data: {
-                    description: `User ${interaction.user.tag} completed Pursuit Verification as ${robloxName}`,
+                    description: `User ${interaction.user.tag} completed Pursuit Verification as ${nickName}`,
                     userId: interaction.user.id,
-                    robloxName: robloxName
+                    nickName: nickName
                 }
             });
         } catch (logErr) {
@@ -213,10 +219,10 @@ export async function setupPursuitVerificationPanel(client) {
             .setColor(getColor('info'))
             .setTitle('Verify your Interactive Mountain account')
             .setDescription(
-                'Linking your Discord unlocks your member roles here, keeps your groups in sync, and ties your purchases and support access to this server.\n\n' +
+                'Linking your account unlocks your member roles here, keeps your groups in sync, and ties your purchases and support access to this server.\n\n' +
                 '**How to verify**\n' +
                 '1. Create your account on our website\n' +
-                '2. Link your Discord & Roblox accounts under Settings\n' +
+                '2. Link your Discord account (and optionally Roblox if available)\n' +
                 '3. Click **Update Roles** below to sync your profile, nickname, and roles\n\n' +
                 'Stuck? Open a support ticket and the team will sort you out.'
             )
@@ -242,7 +248,7 @@ export async function setupPursuitVerificationPanel(client) {
             const oldPanels = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0);
 
             for (const [, oldMsg] of oldPanels) {
-                await oldMsg.delete().catch(() => {});
+                await oldMsg.ched().catch(() => {}); // handled safely
             }
         } catch (fetchErr) {
             console.warn(`[Pursuit Setup Warning] Could not delete previous panels: ${fetchErr.message}`);
